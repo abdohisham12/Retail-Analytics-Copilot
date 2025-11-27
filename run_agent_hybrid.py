@@ -225,12 +225,15 @@ def main():
     
     args = parser.parse_args()
     
-    print("Initializing Retail Analytics Copilot...")
-    print("This may take a moment on first run (indexing documents)...")
+    print("Initializing Retail Analytics Copilot...", flush=True)
+    print("This may take a moment on first run (indexing documents)...", flush=True)
+    sys.stdout.flush()
+    sys.stderr.flush()
     
     try:
         workflow = HybridRetailAnalyticsGraph()
-        print("[OK] Copilot ready!\n")
+        print("[OK] Copilot ready!\n", flush=True)
+        sys.stdout.flush()
         
         # Batch mode
         if args.batch:
@@ -293,7 +296,10 @@ def main():
                             print(f"  Citations: {len(output['citations'])}")
                             
                         except Exception as e:
-                            print(f"  [ERROR] {e}")
+                            import traceback
+                            error_trace = traceback.format_exc()
+                            print(f"  [ERROR] {e}", file=sys.stderr, flush=True)
+                            print(f"  [TRACEBACK] {error_trace}", file=sys.stderr, flush=True)
                             # Create error output
                             results.append({
                                 "id": question_id,
