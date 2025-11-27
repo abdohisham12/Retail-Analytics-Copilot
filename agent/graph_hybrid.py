@@ -15,8 +15,8 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 from agent.rag.retrieval import RAGRetrieval
 from agent.tools.sqlite_tool import SQLiteTool
 from agent.dspy_signatures import (
-    OllamaLM, QueryRoutingModule, SQLGenerationModule, 
-    AnswerSynthesisModule, SQLRepairModule, ConstraintPlannerModule
+    QueryRoutingModule, SQLGenerationModule, 
+    AnswerSynthesisModule, SQLRepairModule, ConstraintPlannerModule, get_ollama_lm
 )
 
 # Configuration constants (merged from config.py)
@@ -127,8 +127,8 @@ class HybridRetailAnalyticsGraph:
         self.rag = RAGRetrieval()
         self.sql_tool = SQLiteTool()
         
-        # Initialize DSPy with Ollama
-        self.lm = OllamaLM()
+        # Initialize DSPy with Ollama (using litellm for better compatibility)
+        self.lm = get_ollama_lm()
         dspy.configure(lm=self.lm)
         
         # Initialize DSPy modules (try to load optimized router if available)

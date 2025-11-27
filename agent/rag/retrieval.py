@@ -10,8 +10,8 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '../..'))
 import chromadb
 from chromadb.config import Settings
 from sentence_transformers import SentenceTransformer
-from langchain.text_splitter import RecursiveCharacterTextSplitter
-from langchain.document_loaders import DirectoryLoader, TextLoader, PyPDFLoader
+from langchain_text_splitters import RecursiveCharacterTextSplitter
+from langchain_community.document_loaders import DirectoryLoader, TextLoader
 
 # Configuration constants (merged from config.py)
 PROJECT_ROOT = Path(__file__).parent.parent.parent
@@ -65,13 +65,13 @@ class RAGRetrieval:
         if self.collection.count() > 0:
             return  # Already indexed
         
-        # Load documents
+        # Load documents (only markdown and text files)
         loaders = []
-        for ext in ["*.txt", "*.md", "*.pdf"]:
+        for ext in ["*.txt", "*.md"]:
             loader = DirectoryLoader(
                 str(DOCS_DIR),
                 glob=ext,
-                loader_cls=TextLoader if ext != "*.pdf" else PyPDFLoader,
+                loader_cls=TextLoader,
                 show_progress=True
             )
             loaders.append(loader)

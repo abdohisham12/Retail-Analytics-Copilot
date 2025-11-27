@@ -9,7 +9,7 @@ import os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 # Configuration constants (merged from config.py)
-OLLAMA_MODEL = "phi3.5-mini-instruct"
+OLLAMA_MODEL = "phi3.5:3.8b-mini-instruct-q4_K_M"  # Local quantized model
 OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
 
 # Type definitions (merged from analytics_types.py)
@@ -21,8 +21,26 @@ class QueryIntent(BaseModel):
     keywords: List[str] = Field(default_factory=list, description="Key terms for RAG search")
 
 
-class OllamaLM(dspy.LM):
-    """DSPy-compatible Ollama language model"""
+# Use litellm for better DSPy compatibility with Ollama
+def get_ollama_lm():
+    """Get Ollama LM using litellm (better DSPy compatibility)"""
+    try:
+        import litellm
+        # Configure litellm to use local Ollama
+        model_name = f"ollama/{OLLAMA_MODEL}"
+        # Set environment variable for litellm
+        import os
+        os.environ["OLLAMA_API_BASE"] = OLLAMA_BASE_URL
+        # litellm handles Ollama integration automatically
+        return dspy.LM(model=model_name)
+    except (ImportError, Exception) as e:
+        # Fallback to custom implementation
+        print(f"Warning: Using custom OllamaLM (litellm failed: {e})")
+        return CustomOllamaLM()
+
+
+class CustomOllamaLM(dspy.LM):
+    """DSPy-compatible Ollama language model (fallback)"""
     
     def __init__(self, model: str = OLLAMA_MODEL, base_url: str = OLLAMA_BASE_URL):
         super().__init__(model)
@@ -41,22 +59,56 @@ class OllamaLM(dspy.LM):
         """
         try:
             temperature = kwargs.get("temperature", 0.7)
-            max_tokens = kwargs.get("max_tokens", 1000)
+            max_tokens = kwargs.get("max_tokens", 2000)  # Increased for structured output
             
             # Local Ollama server - no external network calls
-            response = self.client.generate(
+            # Use chat API for better instruction following
+            response = self.client.chat(
                 model=self.model,
-                prompt=prompt,
+                messages=[{"role": "user", "content": prompt}],
                 options={
                     "temperature": temperature,
                     "num_predict": max_tokens
                 }
             )
-            return response.get("response", "")
+            # Extract response from chat format
+            if isinstance(response, dict):
+                content = response.get("message", {}).get("content", "")
+                # Ensure we get the full response - sometimes it's streamed
+                if not content and "response" in response:
+                    content = response.get("response", "")
+                return content
+            return str(response)
         except Exception as e:
-            return f"Error: {str(e)}"
+            # Fallback to generate if chat fails
+            try:
+                response = self.client.generate(
+                    model=self.model,
+                    prompt=prompt,
+                    options={
+                        "temperature": temperature,
+                        "num_predict": max_tokens
+                    }
+                )
+                if isinstance(response, dict):
+                    content = response.get("response", "")
+                    # Handle streaming response
+                    if not content and "text" in response:
+                        content = response.get("text", "")
+                    return content
+                return str(response)
+            except Exception as e2:
+                return f"Error: {str(e2)}"
     
-    def __call__(self, prompt: str, **kwargs) -> str:
+    def __call__(self, prompt: str = None, **kwargs) -> str:
+        """Handle DSPy calls - prompt may be in kwargs"""
+        if prompt is None:
+            prompt = kwargs.pop("prompt", "")
+        if not prompt:
+            # Try to get from messages if available
+            messages = kwargs.get("messages", [])
+            if messages:
+                prompt = messages[-1].get("content", "")
         return self.basic_request(prompt, **kwargs)
     
     def request(self, prompt: str, **kwargs) -> list:

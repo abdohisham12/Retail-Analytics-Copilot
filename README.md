@@ -24,7 +24,7 @@ A local, free AI agent that answers retail analytics questions by combining RAG 
 └─ requirements.txt
 ```
 
-**All required skeleton files are present.** Additional supporting files (`config.py`, `analytics_types.py`, `setup_northwind.py`, etc.) are minimal and necessary for functionality.
+**All required skeleton files are present.** All supporting code has been merged into the skeleton files.
 
 ## 🚀 Quick Start
 
@@ -35,10 +35,11 @@ A local, free AI agent that answers retail analytics questions by combining RAG 
 pip install -r requirements.txt
 
 # Install and start Ollama
-ollama pull phi3.5-mini-instruct
+ollama pull phi3.5:3.8b-mini-instruct-q4_K_M
 
-# Download database
-python setup_northwind.py
+# Download database (if not already present)
+# The database should be in data/northwind.sqlite
+# If missing, download from: https://raw.githubusercontent.com/jpwhite3/northwind-SQLite3/main/dist/northwind.db
 ```
 
 ### Run Evaluation
@@ -78,11 +79,6 @@ python run_agent_hybrid.py
 - Resilience (20%) - Repair loop improves valid-SQL rate
 - Clarity (20%) - Readable code, proper citations, trace system
 
-**DSPy Optimization**:
-```bash
-python agent/optimize_router.py
-```
-
 ## 📝 Output Contract
 
 Each answer follows this format:
@@ -110,8 +106,8 @@ Each answer follows this format:
 - Check model: `ollama list`
 
 **Database Not Found**:
-- Run: `python setup_northwind.py`
 - Ensure `data/northwind.sqlite` exists
+- If missing, download from: https://raw.githubusercontent.com/jpwhite3/northwind-SQLite3/main/dist/northwind.db
 
 ## 📄 License
 
