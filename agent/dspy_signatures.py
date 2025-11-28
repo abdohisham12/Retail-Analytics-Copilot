@@ -117,6 +117,7 @@ class CustomOllamaLM(dspy.LM):
             # CRITICAL: Handle ChatResponse objects from Ollama FIRST (they're not dicts!)
             # ChatResponse has a .message attribute which is a Message object with .content
             # We must check this BEFORE checking if it's a dict, because ChatResponse is not a dict
+            # NEVER call str(response) on ChatResponse - it returns "m"!
             # Check by both hasattr and type name to be safe
             is_chat_response = False
             if hasattr(response, 'message'):
@@ -126,7 +127,9 @@ class CustomOllamaLM(dspy.LM):
                 is_chat_response = True
                 debug_log(f"[DEBUG] Detected ChatResponse via type name: {type(response).__name__}")
             
-            if is_chat_response:
+            # CRITICAL: ALWAYS try to extract from ChatResponse.message.content FIRST
+            # This must happen BEFORE any string conversion
+            if is_chat_response or (hasattr(response, 'message') and not isinstance(response, dict)):
                 # This is a ChatResponse object - extract the message content
                 debug_log(f"[DEBUG] Response is ChatResponse object, accessing .message attribute")
                 msg = response.message
@@ -146,13 +149,36 @@ class CustomOllamaLM(dspy.LM):
                             # DSPy's JSONAdapter expects raw JSON, not markdown-wrapped JSON
                             import re
                             original_length = len(content_str)
-                            # Remove markdown code blocks (```json ... ``` or ``` ... ```)
-                            content_str = re.sub(r'^```(?:json)?\s*\n', '', content_str, flags=re.MULTILINE)
-                            content_str = re.sub(r'\n```\s*$', '', content_str, flags=re.MULTILINE)
-                            content_str = content_str.strip()
+                            original_preview = content_str[:50]
                             
-                            if original_length != len(content_str):
+                            # Aggressive markdown stripping - handle all cases
+                            debug_log(f"[DEBUG] Checking for markdown: starts with '```'? {content_str.strip().startswith('```')}")
+                            if content_str.strip().startswith('```'):
+                                debug_log(f"[DEBUG] STRIPPING MARKDOWN - Original: {repr(content_str[:100])}")
+                                # Find the first newline after the opening code block
+                                lines = content_str.split('\n', 1)
+                                if len(lines) > 1:
+                                    # Remove first line (the ```... line) and get the rest
+                                    content_str = lines[1]
+                                else:
+                                    # No newline, try to remove the opening manually
+                                    content_str = re.sub(r'^```[a-zA-Z]*\s*', '', content_str, count=1)
+                                
+                                # Remove closing code block if present
+                                if content_str.rstrip().endswith('```'):
+                                    # Find the last newline before the closing code block
+                                    lines = content_str.rsplit('\n', 1)
+                                    if len(lines) > 1:
+                                        content_str = lines[0]
+                                    else:
+                                        content_str = re.sub(r'```\s*$', '', content_str, count=1)
+                                
+                                content_str = content_str.strip()
+                            
+                            if original_length != len(content_str) or original_preview != content_str[:50]:
                                 debug_log(f"[DEBUG] Stripped markdown code blocks: {original_length} -> {len(content_str)} chars")
+                                debug_log(f"[DEBUG] Before: {repr(original_preview)}")
+                                debug_log(f"[DEBUG] After: {repr(content_str[:50])}")
                             
                             debug_log(f"[DEBUG] Content string length: {len(content_str)}")
                             debug_log(f"[DEBUG] Content preview: {content_str[:200]}")
@@ -301,10 +327,99 @@ class CustomOllamaLM(dspy.LM):
                     return content
             
             # Last resort: convert to string (but this might give us just "m")
-            debug_log(f"[DEBUG] No attributes found, converting to string")
-            content = str(response)
-            debug_log(f"[DEBUG] Converted content length: {len(content)}")
-            debug_log(f"[DEBUG] Converted content preview: {content[:200]}")
+            debug_log(f"[DEBUG] No attributes found, trying to convert to string")
+            debug_log(f"[DEBUG] Response type before str(): {type(response)}")
+            debug_log(f"[DEBUG] Response repr: {repr(response)[:500]}")
+            
+            # CRITICAL: Before converting to string, try EVERY possible way to get the content
+            # This is a last-ditch effort to extract content from ChatResponse
+            try:
+                # Method 1: Try .message.content (most common)
+                if hasattr(response, 'message'):
+                    msg = response.message
+                    debug_log(f"[DEBUG] Found .message via direct access: {type(msg)}")
+                    if hasattr(msg, 'content'):
+                        content = msg.content
+                        debug_log(f"[DEBUG] Found .message.content via direct access: length={len(str(content))}")
+                        if content:
+                            content_str = str(content) if not isinstance(content, str) else content
+                            # Strip markdown
+                            import re
+                            if content_str.strip().startswith('```'):
+                                lines = content_str.split('\n', 1)
+                                if len(lines) > 1:
+                                    content_str = lines[1]
+                                else:
+                                    content_str = re.sub(r'^```[a-zA-Z]*\s*', '', content_str, count=1)
+                                if content_str.rstrip().endswith('```'):
+                                    lines = content_str.rsplit('\n', 1)
+                                    if len(lines) > 1:
+                                        content_str = lines[0]
+                                    else:
+                                        content_str = re.sub(r'```\s*$', '', content_str, count=1)
+                                content_str = content_str.strip()
+                            if len(content_str) > 1:
+                                debug_log(f"[DEBUG] SUCCESS: Returning content from .message.content: length={len(content_str)}")
+                                return content_str
+                
+                # Method 2: Try accessing via __dict__ or __getattribute__
+                if hasattr(response, '__dict__'):
+                    debug_log(f"[DEBUG] Response __dict__ keys: {list(response.__dict__.keys())}")
+                    for key in ['message', 'content', 'text', 'response']:
+                        if hasattr(response, key):
+                            try:
+                                val = getattr(response, key)
+                                if hasattr(val, 'content'):
+                                    val_content = val.content
+                                    if val_content and len(str(val_content)) > 1:
+                                        debug_log(f"[DEBUG] Found content via {key}.content: length={len(str(val_content))}")
+                                        return str(val_content) if not isinstance(val_content, str) else val_content
+                            except:
+                                pass
+            except Exception as e:
+                debug_log(f"[DEBUG] Error in last-resort extraction: {e}")
+                import traceback
+                debug_log(f"[DEBUG] Traceback: {traceback.format_exc()}")
+            
+            # CRITICAL: NEVER convert ChatResponse to string directly - it returns "m"!
+            # Only convert to string if we're absolutely sure it's not a ChatResponse
+            if not is_chat_response and not hasattr(response, 'message'):
+                content = str(response)
+                debug_log(f"[DEBUG] Converted content length: {len(content)}")
+                debug_log(f"[DEBUG] Converted content preview: {content[:200]}")
+            else:
+                # This is a ChatResponse - we should have extracted it already, but try one more time
+                debug_log(f"[DEBUG] CRITICAL: About to convert ChatResponse to string - this will return 'm'!")
+                debug_log(f"[DEBUG] Attempting FINAL emergency extraction...")
+                try:
+                    if hasattr(response, 'message') and hasattr(response.message, 'content'):
+                        emergency_content = response.message.content
+                        if emergency_content and len(str(emergency_content)) > 1:
+                            debug_log(f"[DEBUG] EMERGENCY SUCCESS: Got content via response.message.content: {len(str(emergency_content))} chars")
+                            content_str = str(emergency_content) if not isinstance(emergency_content, str) else emergency_content
+                            # Strip markdown
+                            import re
+                            if content_str.strip().startswith('```'):
+                                lines = content_str.split('\n', 1)
+                                if len(lines) > 1:
+                                    content_str = lines[1]
+                                if content_str.rstrip().endswith('```'):
+                                    lines = content_str.rsplit('\n', 1)
+                                    if len(lines) > 1:
+                                        content_str = lines[0]
+                            content_str = content_str.strip()
+                            return content_str
+                except Exception as e:
+                    debug_log(f"[DEBUG] EMERGENCY extraction failed: {e}")
+                
+                # If emergency extraction failed, return fallback
+                debug_log(f"[DEBUG] EMERGENCY: Using fallback JSON")
+                return '{"reasoning": "Unable to extract response - ChatResponse string conversion would return m", "requires_sql": false, "requires_rag": true}'
+            
+            # If we got here and content is just "m", that's a critical error
+            if len(content.strip()) <= 1 or content.strip() == 'm':
+                debug_log(f"[DEBUG] CRITICAL: str(response) gave us only '{content}' - using fallback")
+                return '{"reasoning": "Unable to extract response - got only m", "requires_sql": false, "requires_rag": true}'
             
             # If string conversion gives us something suspiciously short, try to get more info
             if len(content.strip()) <= 1:
@@ -366,23 +481,55 @@ class CustomOllamaLM(dspy.LM):
                 debug_log(f"[DEBUG] ERROR in generate API: {e2}")
                 return f"Error: {str(e2)}"
     
-    def __call__(self, prompt: str = None, **kwargs) -> str:
-        """Handle DSPy calls - prompt may be in kwargs"""
+    def __call__(self, prompt: str = None, **kwargs):
+        """Handle DSPy calls - prompt may be in kwargs
+        
+        CRITICAL: DSPy's JSONAdapter calls this method and expects a list format.
+        If kwargs contains 'messages' (indicating JSONAdapter call), delegate to request().
+        Otherwise, return string for backward compatibility.
+        """
         import sys
         from pathlib import Path
         
         debug_file = Path(__file__).parent.parent / "ollama_debug.log"
         def debug_log(msg):
-            with open(debug_file, "a", encoding="utf-8") as f:
-                f.write(f"{msg}\n")
-            print(msg, file=sys.stderr)
+            try:
+                with open(debug_file, "a", encoding="utf-8") as f:
+                    f.write(f"{msg}\n")
+            except:
+                pass
+            print(msg, file=sys.stderr, flush=True)
         
         debug_log(f"[DEBUG] __call__ invoked with prompt={prompt is not None}, kwargs keys: {list(kwargs.keys())}")
+        
+        # CRITICAL: If this is called by JSONAdapter (has 'messages' in kwargs), 
+        # delegate to request() which returns the correct list format
+        # Check this FIRST before extracting prompt
+        if 'messages' in kwargs:
+            debug_log(f"[DEBUG] __call__: Detected JSONAdapter call (has 'messages'), delegating to request()")
+            # Extract prompt from messages
+            messages = kwargs.get("messages", [])
+            if messages:
+                # Get the last message content
+                last_msg = messages[-1] if isinstance(messages, list) else messages
+                if isinstance(last_msg, dict):
+                    prompt = last_msg.get("content", "")
+                elif hasattr(last_msg, 'content'):
+                    prompt = last_msg.content
+                else:
+                    prompt = str(last_msg)
+                debug_log(f"[DEBUG] __call__: Extracted prompt from messages: {prompt[:200]}")
+                # Remove messages from kwargs to avoid duplication
+                kwargs_clean = {k: v for k, v in kwargs.items() if k != 'messages'}
+                # Call request() which returns the correct format
+                result = self.request(prompt, **kwargs_clean)
+                debug_log(f"[DEBUG] __call__: request() returned type={type(result)}, length={len(result) if isinstance(result, list) else 'N/A'}")
+                return result
         
         if prompt is None:
             prompt = kwargs.pop("prompt", "")
         if not prompt:
-            # Try to get from messages if available
+            # Try to get from messages if available (fallback)
             messages = kwargs.get("messages", [])
             if messages:
                 prompt = messages[-1].get("content", "")
@@ -398,10 +545,31 @@ class CustomOllamaLM(dspy.LM):
         # DSPy's JSONAdapter expects raw JSON, not markdown-wrapped JSON
         import re
         if isinstance(result, str):
-            # Remove markdown code blocks (```json ... ``` or ``` ... ```)
-            result = re.sub(r'^```(?:json)?\s*\n', '', result, flags=re.MULTILINE)
-            result = re.sub(r'\n```\s*$', '', result, flags=re.MULTILINE)
-            result = result.strip()
+            original_result = result
+            # Aggressive markdown stripping - handle all cases
+            if result.strip().startswith('```'):
+                debug_log(f"[DEBUG] __call__: Stripping markdown - Original: {repr(result[:100])}")
+                # Find the first newline after the opening code block
+                lines = result.split('\n', 1)
+                if len(lines) > 1:
+                    # Remove first line (the ```... line) and get the rest
+                    result = lines[1]
+                else:
+                    # No newline, try to remove the opening manually
+                    result = re.sub(r'^```[a-zA-Z]*\s*', '', result, count=1)
+                
+                # Remove closing code block if present
+                if result.rstrip().endswith('```'):
+                    # Find the last newline before the closing code block
+                    lines = result.rsplit('\n', 1)
+                    if len(lines) > 1:
+                        result = lines[0]
+                    else:
+                        result = re.sub(r'```\s*$', '', result, count=1)
+                
+                result = result.strip()
+                if original_result != result:
+                    debug_log(f"[DEBUG] __call__: Stripped markdown: {len(original_result)} -> {len(result)} chars")
         
         # Safety check: ensure result is never just "m" or a single backtick
         result_stripped = result.strip()
@@ -486,14 +654,36 @@ class CustomOllamaLM(dspy.LM):
         # DSPy's JSONAdapter expects raw JSON, not markdown-wrapped JSON
         import re
         original_length = len(response)
-        # Remove markdown code blocks (```json ... ``` or ``` ... ```)
-        # Handle both single-line and multi-line code blocks
-        response = re.sub(r'^```(?:json)?\s*\n?', '', response, flags=re.MULTILINE)
-        response = re.sub(r'\n?```\s*$', '', response, flags=re.MULTILINE)
-        response = response.strip()
+        original_preview = response[:50]
         
-        if original_length != len(response):
+        # Aggressive markdown stripping - handle all cases
+        print(f"[DEBUG REQUEST] Checking for markdown: starts with '```'? {response.strip().startswith('```')}", file=sys.stderr, flush=True)
+        if response.strip().startswith('```'):
+            print(f"[DEBUG REQUEST] STRIPPING MARKDOWN - Original: {repr(response[:100])}", file=sys.stderr, flush=True)
+            # Find the first newline after the opening code block
+            lines = response.split('\n', 1)
+            if len(lines) > 1:
+                # Remove first line (the ```... line) and get the rest
+                response = lines[1]
+            else:
+                # No newline, try to remove the opening manually
+                response = re.sub(r'^```[a-zA-Z]*\s*', '', response, count=1)
+            
+            # Remove closing code block if present
+            if response.rstrip().endswith('```'):
+                # Find the last newline before the closing code block
+                lines = response.rsplit('\n', 1)
+                if len(lines) > 1:
+                    response = lines[0]
+                else:
+                    response = re.sub(r'```\s*$', '', response, count=1)
+            
+            response = response.strip()
+        
+        if original_length != len(response) or original_preview != response[:50]:
             print(f"[DEBUG REQUEST] Stripped markdown code blocks: {original_length} -> {len(response)} chars", file=sys.stderr, flush=True)
+            print(f"[DEBUG REQUEST] Before: {repr(original_preview)}", file=sys.stderr, flush=True)
+            print(f"[DEBUG REQUEST] After: {repr(response[:50])}", file=sys.stderr, flush=True)
         
         # CRITICAL DEBUG: Log the exact response we got
         print(f"[DEBUG REQUEST] Raw response from basic_request (after stripping): {repr(response[:200])}", file=sys.stderr, flush=True)
@@ -543,12 +733,12 @@ class CustomOllamaLM(dspy.LM):
                     # Strategy 3: If still short or just "m" or "`", return a valid JSON error that DSPy can parse
                     response_stripped_check = response.strip()
                     if len(response) <= 1 or response_stripped_check == 'm' or response_stripped_check == 'M' or response_stripped_check == '`':
-                print(f"[DEBUG REQUEST] Strategy 3: Response is '{response_stripped_check}' - using fallback JSON", file=sys.stderr, flush=True)
-                # Return a valid JSON response that matches the expected format
-                # This is a fallback to prevent DSPy from failing completely
-                # IMPORTANT: This must be valid JSON that DSPy can parse for QueryRouter signature
-                response = '{"reasoning": "Unable to get response from language model - using fallback", "requires_sql": false, "requires_rag": true}'
-                print(f"[DEBUG REQUEST] Strategy 3 fallback response: {repr(response)}", file=sys.stderr, flush=True)
+                        print(f"[DEBUG REQUEST] Strategy 3: Response is '{response_stripped_check}' - using fallback JSON", file=sys.stderr, flush=True)
+                        # Return a valid JSON response that matches the expected format
+                        # This is a fallback to prevent DSPy from failing completely
+                        # IMPORTANT: This must be valid JSON that DSPy can parse for QueryRouter signature
+                        response = '{"reasoning": "Unable to get response from language model - using fallback", "requires_sql": false, "requires_rag": true}'
+                        print(f"[DEBUG REQUEST] Strategy 3 fallback response: {repr(response)}", file=sys.stderr, flush=True)
         
         # Additional safety check: if response is still suspicious after all strategies, use fallback
         final_check = response.strip()
@@ -556,37 +746,38 @@ class CustomOllamaLM(dspy.LM):
             print(f"[DEBUG REQUEST] Final safety check: Response still '{final_check}' - forcing fallback", file=sys.stderr, flush=True)
             response = '{"reasoning": "Unable to get response from language model - using fallback", "requires_sql": false, "requires_rag": true}'
         
-        # Create result in the exact format DSPy expects: list of dicts with "content" key
-        result = [{"content": response}]
+        # CRITICAL: DSPy's ChatAdapter expects "text" key, not "content"!
+        # Create result in the exact format DSPy expects: list of dicts with "text" key
+        result = [{"text": response}]
         
         # Verify structure before returning
         if not isinstance(result, list):
             print(f"[DEBUG REQUEST] ERROR: result is not a list: {type(result)}", file=sys.stderr, flush=True)
-            result = [{"content": str(response)}]
+            result = [{"text": str(response)}]
         elif len(result) == 0:
             print(f"[DEBUG REQUEST] ERROR: result list is empty", file=sys.stderr, flush=True)
-            result = [{"content": str(response)}]
-        elif not isinstance(result[0], dict) or "content" not in result[0]:
+            result = [{"text": str(response)}]
+        elif not isinstance(result[0], dict) or "text" not in result[0]:
             print(f"[DEBUG REQUEST] ERROR: Invalid result[0] structure: {result[0] if result else 'empty'}", file=sys.stderr, flush=True)
-            result = [{"content": str(response)}]
+            result = [{"text": str(response)}]
         
         # Final logging - verify what we're returning
-        content_in_result = result[0].get("content", "")
+        text_in_result = result[0].get("text", "")
         
         # CRITICAL: Final check on the actual content in result - ensure it's never just "m"
-        content_stripped_final = content_in_result.strip()
-        if len(content_stripped_final) <= 1 or content_stripped_final == 'm' or content_stripped_final == 'M':
-            print(f"[DEBUG REQUEST] CRITICAL: Content in result is '{content_stripped_final}' - REPLACING with fallback", file=sys.stderr, flush=True)
-            result[0]["content"] = '{"reasoning": "Unable to get response from language model - using fallback", "requires_sql": false, "requires_rag": true}'
-            content_in_result = result[0]["content"]
+        text_stripped_final = text_in_result.strip()
+        if len(text_stripped_final) <= 1 or text_stripped_final == 'm' or text_stripped_final == 'M':
+            print(f"[DEBUG REQUEST] CRITICAL: Text in result is '{text_stripped_final}' - REPLACING with fallback", file=sys.stderr, flush=True)
+            result[0]["text"] = '{"reasoning": "Unable to get response from language model - using fallback", "requires_sql": false, "requires_rag": true}'
+            text_in_result = result[0]["text"]
         
         print(f"[DEBUG REQUEST] ===== FINAL RESULT BEFORE RETURN =====", file=sys.stderr, flush=True)
         print(f"[DEBUG REQUEST] Result type: {type(result)}", file=sys.stderr, flush=True)
         print(f"[DEBUG REQUEST] Result length: {len(result)}", file=sys.stderr, flush=True)
         print(f"[DEBUG REQUEST] Result[0] type: {type(result[0])}", file=sys.stderr, flush=True)
         print(f"[DEBUG REQUEST] Result[0] keys: {list(result[0].keys()) if isinstance(result[0], dict) else 'N/A'}", file=sys.stderr, flush=True)
-        print(f"[DEBUG REQUEST] Content in result[0]['content']: length={len(content_in_result)}", file=sys.stderr, flush=True)
-        print(f"[DEBUG REQUEST] First 500 chars: {repr(content_in_result[:500])}", file=sys.stderr, flush=True)
+        print(f"[DEBUG REQUEST] Text in result[0]['text']: length={len(text_in_result)}", file=sys.stderr, flush=True)
+        print(f"[DEBUG REQUEST] First 500 chars: {repr(text_in_result[:500])}", file=sys.stderr, flush=True)
         print(f"[DEBUG REQUEST] ======================================", file=sys.stderr, flush=True)
         
         try:
@@ -595,8 +786,8 @@ class CustomOllamaLM(dspy.LM):
                 f.write(f"FINAL RESULT BEFORE RETURN\n")
                 f.write(f"Result type: {type(result)}\n")
                 f.write(f"Result length: {len(result)}\n")
-                f.write(f"Content length: {len(content_in_result)} chars\n")
-                f.write(f"Content: {content_in_result[:1000]}\n")
+                f.write(f"Text length: {len(text_in_result)} chars\n")
+                f.write(f"Text: {text_in_result[:1000]}\n")
                 f.write(f"{'='*80}\n")
         except Exception as log_error:
             print(f"[DEBUG REQUEST] Could not write to log: {log_error}", file=sys.stderr, flush=True)
