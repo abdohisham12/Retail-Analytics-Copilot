@@ -1,6 +1,0 @@
-{"id": "rag_policy_beverages_return_days", "final_answer": null, "sql": "", "confidence": 0.0, "explanation": "Error processing question: 'text'", "citations": []}
-{"id": "hybrid_top_category_qty_summer_1997", "final_answer": null, "sql": "", "confidence": 0.0, "explanation": "Error processing question: 'text'", "citations": []}
-{"id": "hybrid_aov_winter_1997", "final_answer": null, "sql": "", "confidence": 0.0, "explanation": "Error processing question: 'text'", "citations": []}
-{"id": "sql_top3_products_by_revenue_alltime", "final_answer": null, "sql": "", "confidence": 0.0, "explanation": "Error processing question: 'text'", "citations": []}
-{"id": "hybrid_revenue_beverages_summer_1997", "final_answer": null, "sql": "", "confidence": 0.0, "explanation": "Error processing question: 'text'", "citations": []}
-{"id": "hybrid_best_customer_margin_1997", "final_answer": null, "sql": "", "confidence": 0.0, "explanation": "Error processing question: 'text'", "citations": []}

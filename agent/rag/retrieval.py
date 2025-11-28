@@ -128,7 +128,7 @@ class RAGRetrieval:
         results = self.collection.query(
             query_embeddings=[query_embedding.tolist()],
             n_results=min(top_k, self.collection.count()),
-            include=["documents", "metadatas", "distances", "ids"]
+            include=["documents", "metadatas", "distances"]  # 'ids' is returned automatically, not in include
         )
         
         citations = []
@@ -136,12 +136,22 @@ class RAGRetrieval:
         scores = []
         
         if results["documents"] and len(results["documents"][0]) > 0:
-            for doc, metadata, distance, chunk_id in zip(
+            # Extract IDs - ChromaDB returns them automatically, check if available
+            result_ids = results.get("ids", [[]])
+            ids_list = result_ids[0] if result_ids else []
+            
+            for i, (doc, metadata, distance) in enumerate(zip(
                 results["documents"][0],
                 results["metadatas"][0],
-                results["distances"][0],
-                results["ids"][0]
-            ):
+                results["distances"][0]
+            )):
+                # Get chunk_id from results if available, otherwise from metadata or generate
+                if i < len(ids_list):
+                    chunk_id = ids_list[i]
+                elif "chunk_index" in metadata:
+                    chunk_id = f"doc_{metadata['chunk_index']}"
+                else:
+                    chunk_id = f"doc_{i}"
                 confidence = 1.0 - distance  # Convert distance to confidence
                 score = float(confidence)
                 

@@ -59,7 +59,13 @@ class CustomOllamaLM(dspy.LM):
     def basic_request(self, prompt: str, **kwargs) -> str:
         """Make request to Ollama (local, no external network calls)
         
-        Constraint: Prompts should be ≤1k tokens (enforced by caller)
+        Constraint: PROMPT (input) should be ≤1k tokens (enforced by caller via:
+        - RAG: 3 chunks max × 500 chars = ~1500 chars ≈ 400 tokens
+        - Schema: Compact format (10 columns max) ≈ 300 tokens
+        - Question + instructions ≈ 200 tokens
+        Total: ~900 tokens, well under 1k limit)
+        
+        Note: max_tokens parameter controls OUTPUT (response) size, not input.
         """
         import sys
         from pathlib import Path
@@ -80,7 +86,10 @@ class CustomOllamaLM(dspy.LM):
         
         try:
             temperature = kwargs.get("temperature", 0.7)
-            max_tokens = kwargs.get("max_tokens", 2000)  # Increased for structured output
+            # max_tokens is for OUTPUT (response generation), not INPUT (prompt)
+            # Constraint: PROMPT (input) must be ≤1k tokens (enforced by caller via chunk limits)
+            # This max_tokens allows longer structured responses (JSON, SQL queries, etc.)
+            max_tokens = kwargs.get("max_tokens", 2000)  # Output limit for structured responses
             
             # Local Ollama server - no external network calls
             # Use chat API for better instruction following

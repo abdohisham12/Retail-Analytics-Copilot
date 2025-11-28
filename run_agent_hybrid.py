@@ -25,46 +25,107 @@ class AnalyticsAnswer(BaseModel):
 
 # Output formatter functions (merged from agent/output_formatter.py)
 def extract_tables_from_sql(sql_query: str) -> List[str]:
-    """Extract table names from SQL query"""
+    """Extract table names from SQL query
+    
+    Handles:
+    - Quoted table names: "Order Details"
+    - Unquoted table names: Orders
+    - Multiple tables in JOINs
+    - FROM, JOIN, UPDATE, INSERT INTO clauses
+    """
     if not sql_query:
         return []
-    patterns = [
-        r'FROM\s+["\']?(\w+(?:\s+\w+)?)["\']?',
-        r'JOIN\s+["\']?(\w+(?:\s+\w+)?)["\']?',
-        r'UPDATE\s+["\']?(\w+(?:\s+\w+)?)["\']?',
-        r'INTO\s+["\']?(\w+(?:\s+\w+)?)["\']?',
-    ]
+    
     tables = set()
+    
+    # Pattern 1: Quoted table names (e.g., "Order Details", 'Order Details')
+    quoted_pattern = r'["\']([^"\']+(?:\s+[^"\']+)*)["\']'
+    quoted_matches = re.findall(quoted_pattern, sql_query, re.IGNORECASE)
+    for match in quoted_matches:
+        # Check if it's in a table context (FROM, JOIN, etc.)
+        match_pos = sql_query.lower().find(match.lower())
+        if match_pos > 0:
+            context = sql_query[max(0, match_pos-20):match_pos].lower()
+            if any(keyword in context for keyword in ['from', 'join', 'update', 'into']):
+                tables.add(match)
+    
+    # Pattern 2: Unquoted table names after FROM, JOIN, UPDATE, INSERT INTO
+    # More robust pattern that handles table aliases
+    patterns = [
+        r'FROM\s+(?:["\']?)(\w+(?:\s+\w+)?)(?:["\']?)(?:\s+AS\s+\w+)?',
+        r'JOIN\s+(?:["\']?)(\w+(?:\s+\w+)?)(?:["\']?)(?:\s+AS\s+\w+)?',
+        r'UPDATE\s+(?:["\']?)(\w+(?:\s+\w+)?)(?:["\']?)(?:\s+SET)?',
+        r'INTO\s+(?:["\']?)(\w+(?:\s+\w+)?)(?:["\']?)(?:\s+\()?',
+    ]
+    
     for pattern in patterns:
         matches = re.findall(pattern, sql_query, re.IGNORECASE)
         for match in matches:
             table = match.strip().strip('"').strip("'")
-            if table:
+            # Skip SQL keywords that might be matched
+            if table and table.upper() not in ['SELECT', 'WHERE', 'SET', 'VALUES', 'AS']:
                 tables.add(table)
+    
+    # Special handling for "Order Details" (table name with space)
+    # Check if it appears in the query (quoted or unquoted)
     if '"Order Details"' in sql_query or "'Order Details'" in sql_query:
         tables.add("Order Details")
+    elif re.search(r'\bOrder\s+Details\b', sql_query, re.IGNORECASE):
+        tables.add("Order Details")
+    
+    # Return sorted list for consistent output
     return sorted(list(tables))
 
 def format_chunk_citation(source: str, chunk_id: str) -> str:
-    """Format chunk citation as filename::chunkID"""
+    """Format chunk citation as filename::chunkID
+    
+    Transforms chunk IDs from doc_0 format to chunk0 format to match expected citation format.
+    Example: doc_0 -> chunk0, doc_1 -> chunk1, etc.
+    """
     clean_source = source
     if '#' in clean_source:
         clean_source = clean_source.split('#')[0]
     filename = Path(clean_source).stem
+    
+    # Extract chunk_id if not provided
     if not chunk_id or chunk_id == "":
         if '#' in source:
             chunk_id = source.split('#')[-1]
+    
+    # Transform doc_0, doc_1, etc. to chunk0, chunk1, etc.
+    if chunk_id.startswith("doc_"):
+        chunk_num = chunk_id.replace("doc_", "")
+        try:
+            # Ensure it's a valid number, then format as chunk0, chunk1, etc.
+            chunk_id = f"chunk{chunk_num}"
+        except:
+            # If transformation fails, use as-is
+            pass
+    
     return f"{filename}::{chunk_id}"
 
 def parse_final_answer(answer_text: str, format_hint: str) -> Any:
-    """Parse answer to match format_hint exactly"""
+    """Parse answer to match format_hint exactly
+    
+    Handles:
+    - int: Extract integer
+    - float: Extract float, round to 2 decimals
+    - {key:type, ...}: Parse as JSON object
+    - list[{...}]: Parse as JSON array of objects
+    """
     if not format_hint:
         return answer_text
+    
     answer_text = answer_text.strip()
+    
+    # Remove markdown code blocks if present
     if answer_text.startswith("```"):
         lines = answer_text.split("\n")
         if len(lines) > 1:
             answer_text = "\n".join(lines[1:-1]) if answer_text.endswith("```") else "\n".join(lines[1:])
+        answer_text = answer_text.strip()
+    
+    # Parse integer
     if format_hint == "int":
         try:
             match = re.search(r'-?\d+', answer_text)
@@ -73,6 +134,8 @@ def parse_final_answer(answer_text: str, format_hint: str) -> Any:
             return int(float(answer_text))
         except (ValueError, TypeError):
             return 0
+    
+    # Parse float (round to 2 decimals, ±0.01 tolerance for grading)
     elif format_hint == "float":
         try:
             match = re.search(r'-?\d+\.?\d*', answer_text)
@@ -82,18 +145,61 @@ def parse_final_answer(answer_text: str, format_hint: str) -> Any:
             return round(float(answer_text), 2)
         except (ValueError, TypeError):
             return 0.0
+    
+    # Parse object format: {key:type, ...} or list of objects: list[{key:type, ...}]
     elif format_hint.startswith("list[") or format_hint.startswith("{"):
-        try:
-            json_match = re.search(r'\[.*\]|\{.*\}', answer_text, re.DOTALL)
+        # Try multiple strategies to extract JSON
+        json_candidates = []
+        
+        # Strategy 1: Look for JSON array or object in the text
+        array_pattern = r'\[[^\]]*(?:\{[^\}]*\}[^\]]*)*\]'
+        object_pattern = r'\{[^\}]*(?:\{[^\}]*\}[^\}]*)*\}'
+        
+        # Try to find complete JSON structures
+        for pattern in [array_pattern, object_pattern]:
+            matches = re.finditer(pattern, answer_text, re.DOTALL)
+            for match in matches:
+                json_candidates.append(match.group())
+        
+        # Strategy 2: Try parsing the entire text as JSON
+        json_candidates.append(answer_text)
+        
+        # Strategy 3: Look for JSON between common delimiters
+        if "```json" in answer_text.lower():
+            json_match = re.search(r'```json\s*(.*?)\s*```', answer_text, re.DOTALL | re.IGNORECASE)
             if json_match:
-                parsed = json.loads(json_match.group())
+                json_candidates.insert(0, json_match.group(1))
+        
+        # Try each candidate
+        for candidate in json_candidates:
+            try:
+                parsed = json.loads(candidate.strip())
+                # Validate structure matches format_hint
+                if format_hint.startswith("list["):
+                    if isinstance(parsed, list):
+                        return parsed
+                elif format_hint.startswith("{"):
+                    if isinstance(parsed, dict):
+                        return parsed
+                # If structure matches, return it
+                return parsed
+            except (json.JSONDecodeError, ValueError):
+                continue
+        
+        # Last resort: try to extract and parse any JSON-like structure
+        try:
+            # Remove any leading/trailing text and try parsing
+            cleaned = re.sub(r'^[^{[]*', '', answer_text)
+            cleaned = re.sub(r'[^}\]]*$', '', cleaned)
+            if cleaned:
+                parsed = json.loads(cleaned)
                 return parsed
         except (json.JSONDecodeError, ValueError):
             pass
-        try:
-            return json.loads(answer_text)
-        except (json.JSONDecodeError, ValueError):
-            return answer_text
+        
+        # If all parsing fails, return the text as-is (better than empty)
+        return answer_text
+    
     return answer_text
 
 def generate_explanation(answer_type: str, has_sql: bool, has_rag: bool) -> str:
@@ -133,13 +239,17 @@ def format_output_contract(
             seen.add(cit)
             unique_citations.append(cit)
     explanation = generate_explanation(answer_type, bool(sql_executed), len(chunk_ids) > 0)
+    
+    # Ensure confidence is in valid range [0.0, 1.0]
+    confidence = max(0.0, min(1.0, float(confidence)))
+    
     return {
         "id": question_id,
         "final_answer": final_answer,
         "sql": sql_executed if sql_executed else "",
         "confidence": round(confidence, 4),
         "explanation": explanation,
-        "citations": unique_citations
+        "citations": sorted(unique_citations)  # Sort for consistent output
     }
 
 

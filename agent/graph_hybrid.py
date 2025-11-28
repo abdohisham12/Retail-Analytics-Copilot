@@ -146,8 +146,27 @@ class HybridRetailAnalyticsGraph:
         self.app = self.graph.compile()
     
     def _load_optimized_router(self):
-        """Try to load optimized router if available"""
-        return None  # Optimization removed per skeleton requirements
+        """Try to load optimized router if available
+        
+        To optimize the router:
+        1. Run: python optimize_router.py
+        2. This will generate agent/optimized_router.pkl
+        3. The optimized router will be automatically loaded on next run
+        
+        The optimization uses BootstrapFewShot on 30 training examples
+        and shows before/after classification accuracy metrics.
+        """
+        try:
+            import pickle
+            optimized_path = PROJECT_ROOT / "agent" / "optimized_router.pkl"
+            if optimized_path.exists():
+                with open(optimized_path, 'rb') as f:
+                    optimized_router = pickle.load(f)
+                print(f"[INFO] Loaded optimized router from {optimized_path}")
+                return optimized_router
+        except Exception as e:
+            print(f"[INFO] Could not load optimized router: {e}")
+        return None  # Fall back to base router
     
     def _build_graph(self) -> StateGraph:
         """Build LangGraph workflow with ≥8 nodes"""
