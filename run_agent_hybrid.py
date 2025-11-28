@@ -65,27 +65,19 @@ def write_jsonl(path: Path, rows: Iterable[Dict[str, Any]]) -> None:
             handle.write(json.dumps(row, ensure_ascii=False) + "\n")
 
 
-def _truncate_explanation(text: str, max_chars: int = 200, max_sentences: int = 2) -> str:
-    """Truncate explanation to max_sentences sentences and max_chars, ensuring it ends at a sentence boundary."""
+def _normalize_explanation_safe(text: str, max_sentences: int = 2) -> str:
+    """Normalize explanation to exactly <= max_sentences sentences, never cutting mid-sentence."""
     if not text:
         return ""
     import re
-    # First, enforce sentence limit
+    # Split on sentence boundaries
     parts = re.split(r"(?<=[.!?])\s+", text.strip())
-    text = " ".join(parts[:max_sentences]).strip()
-    if not text and parts:
-        text = parts[0].strip()
-    # Then enforce character limit
-    if len(text) <= max_chars:
-        return text
-    truncated = text[:max_chars]
-    # Find the last sentence-ending punctuation
-    for punct in ".!?":
-        last_punct = truncated.rfind(punct)
-        if last_punct > max_chars * 0.5:  # Only use if we're keeping at least half
-            return truncated[:last_punct + 1].strip()
-    # If no sentence boundary found, just truncate (don't add ellipsis to keep it clean)
-    return truncated.rstrip()
+    # Take first max_sentences sentences
+    trimmed = " ".join(parts[:max_sentences]).strip()
+    # Fallback if model forgot punctuation
+    if not trimmed and parts:
+        trimmed = parts[0].strip()
+    return trimmed
 
 
 def run_question(graph, payload: Dict[str, Any]) -> tuple[Dict[str, Any], List[str], Dict[str, Any]]:
@@ -115,7 +107,7 @@ def run_question(graph, payload: Dict[str, Any]) -> tuple[Dict[str, Any], List[s
         "final_answer": final_state.get("final_answer"),
         "sql": sql_text,
         "confidence": float(final_state.get("confidence") or 0.4),
-        "explanation": _truncate_explanation(final_state.get("explanation") or "Answered using local context."),
+        "explanation": _normalize_explanation_safe(final_state.get("explanation") or "Answered using local context."),
         "citations": final_state.get("citations", []),
     }
     return result, final_state.get("trace", []), final_state.get("metrics", {})
@@ -165,11 +157,13 @@ def cli(batch: Path, out: Path, model: str) -> None:
 
     outputs = []
     metrics_log: Dict[str, Any] = {}
+    trace_log: List[Dict[str, Any]] = []
     for item in questions:
         console.print(f"[magenta]Processing[/magenta] {item['id']}")
         answer, trace, metrics = run_question(graph, item)
         outputs.append(answer)
         log_payload = {"id": item["id"], "trace": trace}
+        trace_log.append(log_payload)
         if profiling_enabled():
             if not metrics:
                 metrics = consume_profile_metrics(item["id"])
@@ -180,6 +174,12 @@ def cli(batch: Path, out: Path, model: str) -> None:
 
     write_jsonl(out, outputs)
     console.print(f"[green]Wrote results to {out}[/green]")
+    
+    # Save replayable trace log to file (file/console as required)
+    trace_path = out.with_suffix("").with_name(f"{out.stem}_trace.jsonl")
+    write_jsonl(trace_path, trace_log)
+    console.print(f"[blue]Saved trace log to {trace_path}[/blue]")
+    
     if profiling_enabled() and metrics_log:
         metrics_path = Path("testing") / "metrics" / "latest_metrics.json"
         metrics_path.parent.mkdir(parents=True, exist_ok=True)

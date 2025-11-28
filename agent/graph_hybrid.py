@@ -266,6 +266,13 @@ def validator_node(state: AgentState, _: AgentResources) -> AgentState:
         parts = re.split(r"(?<=[.!?])\s+", explanation.strip())
         if len(parts) > 2:
             errors.append("explanation_too_long")
+    
+    # Track repair effectiveness: if we had errors before and now we don't, repair succeeded
+    previous_errors = state.get("last_validation_errors", [])
+    repair_attempts = state.get("repair_attempts", 0)
+    if previous_errors and not errors and repair_attempts > 0:
+        state.setdefault("trace", []).append(f"repair:success:fixed_{','.join(previous_errors)}")
+    
     state["last_validation_errors"] = errors
     state.setdefault("trace", []).append(f"validator:{','.join(errors) or 'ok'}")
     return state
