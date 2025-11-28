@@ -1,2 +1,0 @@
-sql is None? False
-SELECT c.CategoryName, SUM(od.Quantity) AS total_qty FROM Orders o JOIN "Order Details" od ON o.OrderID = od.OrderID JOIN Products p ON od.ProductID = p.ProductID JOIN Categories c ON p.CategoryID = c.CategoryID WHERE date(o.OrderDate) BETWEEN '2012-07-10' AND '2012-08-08' GROUP BY c.CategoryName ORDER BY total_qty DESC LIMIT 1
