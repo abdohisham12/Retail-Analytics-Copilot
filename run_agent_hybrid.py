@@ -81,6 +81,7 @@ def _normalize_explanation_safe(text: str, max_sentences: int = 2) -> str:
 
 
 def run_question(graph, payload: Dict[str, Any]) -> tuple[Dict[str, Any], List[str], Dict[str, Any]]:
+    """Execute a single question through the agent graph and return answer, trace, and metrics."""
     state: AgentState = {
         "question_id": payload["id"],
         "question": payload["question"],

@@ -64,6 +64,7 @@ class AgentResources:
 
 
 def build_agent_resources() -> AgentResources:
+    """Initialize and return all agent resources (retriever, SQL tool, DSPy modules)."""
     retriever = DocRetriever()
     sqlite_tool = SQLiteTool()
     router = RouterModule()
@@ -81,6 +82,7 @@ def build_agent_resources() -> AgentResources:
 
 
 def summarize_schema(sqlite_tool: SQLiteTool, max_cols: int = 4) -> str:
+    """Generate a concise schema summary for LLM context (table names + first N columns)."""
     schema = sqlite_tool.get_schema()
     parts = []
     for table, cols in schema.items():
@@ -100,6 +102,7 @@ def _record_timing(state: AgentState, name: str, duration: float) -> None:
 
 
 def profile_node(name: str):
+    """Decorator factory for profiling node execution time when AGENT_PROFILE is enabled."""
     def decorator(fn):
         def wrapped(state: AgentState, resources: AgentResources):
             if not profiling_enabled():
@@ -118,6 +121,7 @@ def profile_node(name: str):
 
 @profile_node("router")
 def router_node(state: AgentState, resources: AgentResources) -> AgentState:
+    """Route question to rag, sql, or hybrid mode based on DSPy classification."""
     prediction = resources.router(question=state["question"])
     mode = (prediction.mode or "").strip().lower()
     if not mode:
@@ -131,6 +135,7 @@ def router_node(state: AgentState, resources: AgentResources) -> AgentState:
 
 @profile_node("retriever")
 def retriever_node(state: AgentState, resources: AgentResources) -> AgentState:
+    """Retrieve top-k document chunks using TF-IDF similarity."""
     hits = resources.retriever.search(state["question"], top_k=4)
     state["retrieved_chunks"] = hits
     state.setdefault("trace", []).append(f"retriever:{len(hits)}")
@@ -139,6 +144,7 @@ def retriever_node(state: AgentState, resources: AgentResources) -> AgentState:
 
 @profile_node("planner")
 def planner_node(state: AgentState, resources: AgentResources) -> AgentState:
+    """Extract constraints (dates, KPIs, categories) from retrieved chunks and schema."""
     chunk_text = "\n".join(f"{c['chunk_id']}: {c['text']}" for c in state.get("retrieved_chunks", []))
     schema_notes = state.get("schema_notes", "")
     prediction = resources.planner(
@@ -153,6 +159,7 @@ def planner_node(state: AgentState, resources: AgentResources) -> AgentState:
 
 @profile_node("nl2sql")
 def nl2sql_node(state: AgentState, resources: AgentResources) -> AgentState:
+    """Generate SQLite query from natural language using DSPy-optimized module."""
     prediction = resources.nl2sql(
         question=state["question"],
         plan=state.get("plan", ""),
@@ -168,6 +175,7 @@ def nl2sql_node(state: AgentState, resources: AgentResources) -> AgentState:
 
 @profile_node("executor")
 def executor_node(state: AgentState, resources: AgentResources) -> AgentState:
+    """Execute SQL query and capture results, with fallback SQL for known patterns."""
     sql = state.get("sql", "")
     if not sql:
         state["sql_result"] = {"columns": [], "rows": [], "tables": [], "error": "SQL missing"}
@@ -192,6 +200,7 @@ def executor_node(state: AgentState, resources: AgentResources) -> AgentState:
 
 @profile_node("synthesizer")
 def synthesizer_node(state: AgentState, resources: AgentResources) -> AgentState:
+    """Synthesize final answer from retrieved chunks and SQL results, matching format_hint."""
     retrieved_text = "\n".join(
         f"{c['chunk_id']} ({c['source']}): {c['text']}" for c in state.get("retrieved_chunks", [])
     )
@@ -266,7 +275,7 @@ def validator_node(state: AgentState, _: AgentResources) -> AgentState:
         parts = re.split(r"(?<=[.!?])\s+", explanation.strip())
         if len(parts) > 2:
             errors.append("explanation_too_long")
-    
+
     # Track repair effectiveness: if we had errors before and now we don't, repair succeeded
     previous_errors = state.get("last_validation_errors", [])
     repair_attempts = state.get("repair_attempts", 0)
@@ -304,16 +313,19 @@ def repair_node(state: AgentState, _: AgentResources) -> AgentState:
 
 
 def planner_branch(state: AgentState) -> str:
+    """Conditional routing after planner: rag, sql, or hybrid."""
     return state.get("mode", "hybrid")
 
 
 def validator_branch(state: AgentState) -> str:
+    """Conditional routing after validation: repair if errors exist and attempts < 2, else end."""
     if state.get("last_validation_errors") and state.get("repair_attempts", 0) < 2:
         return "repair"
     return "end"
 
 
 def repair_branch(state: AgentState) -> str:
+    """Conditional routing after repair: route to appropriate node based on error type."""
     if state.get("repair_attempts", 0) >= 2:
         return "end"
     if "sql_error" in state.get("last_validation_errors", []):
@@ -330,6 +342,7 @@ def repair_branch(state: AgentState) -> str:
 
 
 def build_graph(resources: Optional[AgentResources] = None):
+    """Build and compile the LangGraph state machine with all 8 nodes."""
     resources = resources or build_agent_resources()
     schema_notes = summarize_schema(resources.sqlite_tool)
 
@@ -444,7 +457,7 @@ def _normalize_citation(
     """Normalize a single predicted citation token.
 
     We only accept citation strings that correspond to:
-    - known doc chunk IDs (e.g., ``product_policy::chunk1``), or
+    - known doc chunk IDs (e.g., `product_policy::chunk1`), or
     - known table names from the SQL result.
 
     This filters out stray single-character tokens and other garbage while
@@ -581,6 +594,7 @@ def _match_struct(value: Any, spec: str) -> bool:
 
 
 def _heuristic_mode(question: str) -> Route:
+    """Fallback routing logic when DSPy router fails (keyword-based classification)."""
     q = question.lower()
     # RAG-only indicators: policy, document references, definitions without calculations
     rag_keywords = ["product policy", "return window", "according to", "per the", "as defined in"]
@@ -596,6 +610,7 @@ def _heuristic_mode(question: str) -> Route:
 
 
 def _heuristic_plan(question: str) -> str:
+    """Fallback plan generation for common question patterns when DSPy planner fails."""
     q = question.lower()
     if "summer beverages 1997" in q:
         return "Use Orders dated between 1997-06-01 and 1997-06-30 with Beverages context."
@@ -611,6 +626,7 @@ def _heuristic_plan(question: str) -> str:
 
 
 def _heuristic_sql(state: AgentState) -> str:
+    """Fallback SQL generation for common question patterns when DSPy NL2SQL fails."""
     question = state["question"].lower()
     if "highest total quantity" in question:
         return (
@@ -663,6 +679,7 @@ def _heuristic_sql(state: AgentState) -> str:
 
 
 def _fallback_answer(state: AgentState) -> Any:
+    """Extract answer from SQL results or retrieved chunks when DSPy synthesizer fails."""
     question = state["question"].lower()
     qid = (state.get("question_id") or "").strip()
     if "product policy" in question:

@@ -107,7 +107,7 @@ class NL2SQLModule:
 
         # Measure baseline performance
         before = _quick_score(self.predict, examples, metric)
-        
+
         # Run BootstrapFewShot optimization (small budget: max 4 demos)
         teleprompter = dspy.teleprompt.BootstrapFewShot(
             metric=metric,
@@ -116,7 +116,7 @@ class NL2SQLModule:
         )
         optimized_program = teleprompter.compile(self.predict, trainset=examples)
         self.predict = optimized_program
-        
+
         # Measure optimized performance
         after = _quick_score(self.predict, examples, metric)
         
@@ -271,7 +271,7 @@ def _quick_score(
 
 def _valid_sql_metric(pred_sql: str, gold_sql: str, tables: Iterable[str]) -> int:
     """Valid-SQL rate metric: returns 1 if prediction is valid SQL with required tables, else 0.
-    
+
     Checks:
     - Non-empty SQL string
     - Starts with SELECT (read-only queries)
@@ -280,11 +280,11 @@ def _valid_sql_metric(pred_sql: str, gold_sql: str, tables: Iterable[str]) -> in
     """
     if not pred_sql or not isinstance(pred_sql, str):
         return 0
-    
+
     lowered = pred_sql.strip().lower()
     if not lowered.startswith("select"):
         return 0
-    
+
     # Check that required tables are mentioned (at least one must be present)
     if tables:
         table_set = {tbl.lower() for tbl in tables}
@@ -293,22 +293,22 @@ def _valid_sql_metric(pred_sql: str, gold_sql: str, tables: Iterable[str]) -> in
         # Check if at least one required table is mentioned
         found_table = False
         for tbl in table_set:
-            if (tbl in sql_tables or 
-                f'"{tbl}"' in sql_tables or 
+            if (tbl in sql_tables or
+                f'"{tbl}"' in sql_tables or
                 f"'{tbl}'" in sql_tables):
                 found_table = True
                 break
         if not found_table:
             return 0
-    
+
     # Basic syntax checks: balanced parentheses, no obvious errors
     if lowered.count("(") != lowered.count(")"):
         return 0
-    
+
     # Reject obviously malformed queries
     if "select select" in lowered or "from from" in lowered:
         return 0
-    
+
     return 1
 
 
